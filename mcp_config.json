@@ -1,0 +1,14 @@
+﻿{
+  "mcpServers": {
+    "ops-lite": {
+      "command": "D:\\CodePackage\\反重力\\.venv\\Scripts\\python.exe",
+      "args": [
+        "-m",
+        "ops_lite.server"
+      ],
+      "env": {
+        "PYTHONPATH": "D:\\CodePackage\\反重力\\server"
+      }
+    }
+  }
+}
