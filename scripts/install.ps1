@@ -91,10 +91,32 @@ if ($agyCmd) {
         Write-Error "Plugin validation failed."
         exit 1
     }
-    
-    & agy plugin install $ProjectRoot
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "agy plugin install failed."
+
+    $destPluginDir = Join-Path $env:USERPROFILE ".gemini\config\plugins\ops-lite"
+    $installedOk = $false
+    try {
+        & agy plugin install $ProjectRoot
+        if ($LASTEXITCODE -eq 0) {
+            $installedOk = $true
+        }
+    } catch {
+        Write-Warning "agy plugin install encountered a file-lock or process issue. Using robust sync..."
+    }
+
+    if (-not $installedOk) {
+        Write-Host "  Applying robust in-place update to $destPluginDir..." -ForegroundColor Yellow
+        New-Item -ItemType Directory -Path $destPluginDir -Force | Out-Null
+        Copy-Item -Path (Join-Path $ProjectRoot "plugin.json"), (Join-Path $ProjectRoot "mcp_config.json") -Destination $destPluginDir -Force
+        Copy-Item -Path (Join-Path $ProjectRoot "rules"), (Join-Path $ProjectRoot "skills"), (Join-Path $ProjectRoot "server") -Destination $destPluginDir -Recurse -Force
+        & agy plugin validate $destPluginDir
+        if ($LASTEXITCODE -eq 0) {
+            $installedOk = $true
+            Write-Host "  In-place plugin synchronization succeeded." -ForegroundColor Green
+        }
+    }
+
+    if (-not $installedOk) {
+        Write-Error "Plugin registration failed."
         exit 1
     }
     Write-Host "  Plugin successfully installed to global Antigravity registry!" -ForegroundColor Green
@@ -104,10 +126,16 @@ if ($agyCmd) {
 
 Write-Host "=============================================" -ForegroundColor Cyan
 Write-Host " Installation Complete! " -ForegroundColor Green
-Write-Host " ops-lite is now active with 5 token-saving tools:" -ForegroundColor White
-Write-Host "  - ops_summary" -ForegroundColor Gray
-Write-Host "  - ops_search" -ForegroundColor Gray
-Write-Host "  - ops_read" -ForegroundColor Gray
-Write-Host "  - ops_run" -ForegroundColor Gray
-Write-Host "  - ops_result" -ForegroundColor Gray
+Write-Host " ops-lite is now active with 10 token-saving tools:" -ForegroundColor White
+Write-Host "  - ops_summary    : Project overview & metadata" -ForegroundColor Gray
+Write-Host "  - ops_glob       : Pattern file discovery" -ForegroundColor Gray
+Write-Host "  - ops_grep       : Multi-mode regex search" -ForegroundColor Gray
+Write-Host "  - ops_search     : Keyword & symbol search" -ForegroundColor Gray
+Write-Host "  - ops_read       : Bounded single file reader" -ForegroundColor Gray
+Write-Host "  - ops_read_files : Multi-file batch reading" -ForegroundColor Gray
+Write-Host "  - ops_replace    : Deterministic literal replace" -ForegroundColor Gray
+Write-Host "  - ops_batch      : Safe copy/move/remove" -ForegroundColor Gray
+Write-Host "  - ops_read_table : Bounded CSV/TSV table reader" -ForegroundColor Gray
+Write-Host "  - ops_run        : Batch verify & git status" -ForegroundColor Gray
+Write-Host "  - ops_result     : Paginated result retrieval" -ForegroundColor Gray
 Write-Host "=============================================" -ForegroundColor Cyan

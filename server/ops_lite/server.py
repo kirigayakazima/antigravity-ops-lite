@@ -7,7 +7,9 @@ from typing import Any, Dict, List, Optional
 
 from mcp.server.mcpserver import MCPServer
 
+from ops_lite.batch import execute_batch_operations, replace_literal_in_files
 from ops_lite.git_ops import get_git_summary
+from ops_lite.grep import glob_files, grep_workspace
 from ops_lite.policy import (
     DEFAULT_READ_MAX_CHARS,
     DEFAULT_SEARCH_MAX_RESULTS,
@@ -16,14 +18,15 @@ from ops_lite.policy import (
     redact_sensitive_text,
 )
 from ops_lite.project import summarize_project
-from ops_lite.reader import read_file_bounded
+from ops_lite.reader import read_file_bounded, read_files_batch
 from ops_lite.results import default_store
 from ops_lite.search import search_workspace
+from ops_lite.table import read_table_bounded
 from ops_lite.verify import run_verification_suite
 
 app = MCPServer(
     name="ops-lite",
-    instructions="High-efficiency, token-budgeted repository inspection, search, reading, and verification.",
+    instructions="High-efficiency, token-budgeted repository operations: multi-file inspection, bounded reading, glob, grep, safe batching, and verification.",
 )
 
 
@@ -86,13 +89,14 @@ def ops_search(
 
 @app.tool(
     name="ops_read",
-    description="Bounded file reader returning 1-indexed line numbers, file hash, and truncation status. Rejects binary and secret files.",
+    description="Bounded single-file reader returning 1-indexed line numbers, file hash, and deduplication detection. Rejects binary and secret files.",
 )
 def ops_read(
     path: str,
     start_line: int = 1,
     end_line: Optional[int] = None,
     max_chars: int = DEFAULT_READ_MAX_CHARS,
+    force: bool = False,
 ) -> str:
     """Read a specific range of lines from a source file securely."""
     try:
@@ -101,12 +105,14 @@ def ops_read(
             start_line=start_line,
             end_line=end_line,
             max_chars=max_chars,
+            force=force,
         )
         if "error" in res:
             return f"Error reading file '{path}': {res['error']}"
 
+        dedup_tag = " [DEDUPLICATED]" if res.get("is_deduplicated") else ""
         lines = [
-            f"# File: {res['path']} (lines {res['start_line']}-{res['end_line']} of {res['total_lines']}) [SHA-256: {res['file_hash']}]",
+            f"# File: {res['path']} (lines {res['start_line']}-{res['end_line']} of {res['total_lines']}) [SHA-256: {res['file_hash']}]{dedup_tag}",
             "```",
             res["content"],
             "```",
@@ -118,6 +124,160 @@ def ops_read(
         return f"Error (Policy Violation): {pv}"
     except Exception as e:
         return f"Error executing ops_read: {e}"
+
+
+@app.tool(
+    name="ops_read_files",
+    description="Batch read bounded ranges across 1-32 files in a single tool call. Each item: {'path': '...', 'start_line': 1, 'end_line': 100}.",
+)
+def ops_read_files(
+    files: List[Dict[str, Any]],
+    max_chars: int = 15000,
+    force: bool = False,
+) -> str:
+    """Batch read multiple files with per-file error isolation and line budgets."""
+    try:
+        res = read_files_batch(files=files, max_chars=max_chars, force=force)
+        return res.get("formatted", str(res))
+    except PolicyViolation as pv:
+        return f"Error (Policy Violation): {pv}"
+    except Exception as e:
+        return f"Error executing ops_read_files: {e}"
+
+
+@app.tool(
+    name="ops_glob",
+    description="Locate files by glob patterns (e.g. ['**/*.py', '!tests/**']). Output modes: 'paths' or 'details' (with size & modified time).",
+)
+def ops_glob(
+    path: str = ".",
+    patterns: Optional[List[str]] = None,
+    output_mode: str = "paths",
+    sort: str = "path",
+    limit: int = 100,
+) -> str:
+    """Find files using glob patterns with sorting and size details."""
+    try:
+        res = glob_files(
+            path=path,
+            patterns=patterns,
+            output_mode=output_mode,
+            sort=sort,
+            limit=limit,
+        )
+        return res.get("formatted", str(res))
+    except PolicyViolation as pv:
+        return f"Error (Policy Violation): {pv}"
+    except Exception as e:
+        return f"Error executing ops_glob: {e}"
+
+
+@app.tool(
+    name="ops_grep",
+    description="Regex search with multiple output modes: 'content' (lines + context), 'files_with_matches' (filenames only), 'count', or 'summary'.",
+)
+def ops_grep(
+    pattern: str,
+    path: str = ".",
+    glob: Optional[List[str]] = None,
+    output_mode: str = "content",
+    case_insensitive: bool = False,
+    before_context: int = 0,
+    after_context: int = 0,
+    max_results: int = 50,
+) -> str:
+    """Regular expression search across UTF-8 workspace files."""
+    try:
+        res = grep_workspace(
+            pattern=pattern,
+            path=path,
+            glob=glob,
+            output_mode=output_mode,
+            case_insensitive=case_insensitive,
+            before_context=before_context,
+            after_context=after_context,
+            max_results=max_results,
+        )
+        return res.get("formatted", str(res))
+    except PolicyViolation as pv:
+        return f"Error (Policy Violation): {pv}"
+    except Exception as e:
+        return f"Error executing ops_grep: {e}"
+
+
+@app.tool(
+    name="ops_replace",
+    description="Deterministic literal text replacement across workspace files. Previews with dry_run=True (default), applies with dry_run=False.",
+)
+def ops_replace(
+    pattern: str,
+    replacement: str,
+    path: str = ".",
+    glob: Optional[List[str]] = None,
+    max_replacements: int = 50,
+    dry_run: bool = True,
+) -> str:
+    """Mechanical cross-file literal text replacement without manual diff creation."""
+    try:
+        res = replace_literal_in_files(
+            pattern=pattern,
+            replacement=replacement,
+            path=path,
+            glob=glob,
+            max_replacements=max_replacements,
+            dry_run=dry_run,
+        )
+        return res.get("formatted", str(res))
+    except PolicyViolation as pv:
+        return f"Error (Policy Violation): {pv}"
+    except Exception as e:
+        return f"Error executing ops_replace: {e}"
+
+
+@app.tool(
+    name="ops_batch",
+    description="Plan and execute safe file operations: copy, move, remove. Action: 'plan' (preview & validate) or 'run' (execute).",
+)
+def ops_batch(
+    action: str,
+    operations: List[Dict[str, Any]],
+    root: str = ".",
+) -> str:
+    """Execute preflight-verified batch file operations."""
+    try:
+        res = execute_batch_operations(action=action, operations=operations, root=root)
+        return res.get("formatted", str(res))
+    except PolicyViolation as pv:
+        return f"Error (Policy Violation): {pv}"
+    except Exception as e:
+        return f"Error executing ops_batch: {e}"
+
+
+@app.tool(
+    name="ops_read_table",
+    description="Bounded CSV/TSV reader. Renders clean, aligned markdown tables with column alignment, row pagination, and character caps.",
+)
+def ops_read_table(
+    path: str,
+    offset: int = 1,
+    limit: int = 50,
+    delimiter: Optional[str] = None,
+    max_chars: int = 8000,
+) -> str:
+    """Read structured tabular data (CSV/TSV) safely."""
+    try:
+        res = read_table_bounded(
+            path=path,
+            offset=offset,
+            limit=limit,
+            delimiter=delimiter,
+            max_chars=max_chars,
+        )
+        return res.get("formatted", str(res))
+    except PolicyViolation as pv:
+        return f"Error (Policy Violation): {pv}"
+    except Exception as e:
+        return f"Error executing ops_read_table: {e}"
 
 
 @app.tool(
@@ -190,7 +350,6 @@ def ops_result(
 
 def main():
     """Run the MCP server over stdio transport."""
-    # Ensure stdout is unbuffered and clean for JSON-RPC messages
     app.run(transport="stdio")
 
 

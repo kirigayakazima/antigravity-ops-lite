@@ -5,3 +5,5 @@ __pycache__/
 .pytest_cache/
 .ops_results/
 scripts/run_benchmark.py
+ref/
+
